@@ -1,0 +1,150 @@
+genes that are not expressed in dataset are removed from UCell gene score input
+  i.e. msigdb genes --> msigdb genes that are expressed in curr dataset
+why? removing non-identified genes means that more effective sequencing (gene coverage) does not create a higher EMT score by default
+
+```{r}
+library(Seurat)
+library(SeuratDisk)
+library(reticulate)
+library(UCell)
+library(dplyr)
+library(RColorBrewer)
+```
+
+
+```{r}
+
+# Import gene marker lists
+
+markerDirectory <- "Markers/"
+MSigDB_str <- "Markers - MSigDB.csv"
+M_MSigDB <- read.csv(paste0(markerDirectory, MSigDB_str), header=FALSE)[, 1]
+
+# List of signature gene sets
+signatures <- list(M_MSigDB = M_MSigDB)
+signatures.names <- paste0(names(signatures), "_UCell")
+
+# file information
+allDatasets <- c("3-Cook", "3-Cook", "3-Cook", "3-Cook", "3-Cook", "3-Cook", "3-Cook")
+allSamples <- c("A549-EGF", "A549-TNF", "DU145-EGF", "DU145-TNF", "MCF7-EGF", "MCF7-TGFB1", "MCF7-TNF")
+
+```
+
+
+```{r}
+
+# Import cell labels
+
+all_labels = list()
+
+for (i in 1:length(allDatasets)) {
+  
+  currDataset = allDatasets[i]
+  currSample = allSamples[i]
+  # File is from the scanpy UCell output
+  fileDirectory = paste0(currDataset, "/DataSummaries/2-EMTscore and Clustering/Cells with Cluster Labels - ", currSample, ".csv")
+  print(fileDirectory)
+  
+  currCellLabels = read.csv(fileDirectory, header=FALSE, row.names="V1")
+  colnames(currCellLabels)[1] ="leiden_label"
+  
+  all_labels[[i]] = currCellLabels
+}
+
+```
+
+
+
+```{r}
+
+# Import seurat objects and run UCell on cell counts
+
+# Output from scanpy runs
+fileStr <- "1-Filtered_and_Normalized_allGenes.h5ad"
+fileStr_seurat <- "1-Filtered_and_Normalized_allGenes.h5seurat"
+
+all_UCellScores = list()
+all_kds_orig = list()
+
+for (i in 1:length(allDatasets)) {
+  currDataset = allDatasets[i]
+  currSample = allSamples[i]
+  fileDirectory = paste0(currDataset, "/_h5ad/", currSample, "/")
+  
+  # convert from h5ad (scanpy) to Seurat object using SeuratDisk
+  Convert(paste0(fileDirectory, fileStr), dest="h5seurat", overwrite=FALSE)
+  currSrt = LoadH5Seurat(paste0(fileDirectory, fileStr_seurat), meta.data=FALSE)
+  
+  # Remove interim file
+  if (file.exists(paste0(fileDirectory, fileStr_seurat))) {
+    unlink(paste0(fileDirectory, fileStr_seurat))
+  }
+  
+  # Remove genes that are not expressed at all
+  signatures_OnlyExpressed <- list(M_MSigDB = intersect(M_MSigDB, rownames(currSrt)))
+  
+  # UCell score
+  currSrt = AddModuleScore_UCell(currSrt, features = signatures_OnlyExpressed)
+  all_UCellScores[[i]] = currSrt@meta.data
+
+  # Kernel density
+  all_kds_orig[[i]] = density(currSrt@meta.data$M_MSigDB_UCell)
+  
+  rm(currSrt)
+  rm(signatures_test)
+}
+
+```
+
+
+
+```{r}
+
+# Export scores
+
+all_mergeLabelScore = list()
+
+for (i in 1:length(allDatasets)) {
+  
+  currDataset = allDatasets[i]
+  currSample = allSamples[i]
+  fileDirectory = paste0(currDataset, "/DataSummaries/2-EMTscore and Clustering/Cells with Cluster Labels - ", currSample, ", UCellScore.csv")
+  
+  currMergeDf = merge(all_labels[[i]], all_UCellScores[[i]], by.x=0, by.y=0, all=FALSE)
+  all_mergeLabelScore[[i]] = currMergeDf
+  
+  write.csv(currMergeDf, fileDirectory)
+}
+
+
+# Kernel density
+all_kds = list()
+
+for (i in 1:length(allDatasets)) {
+  all_kds[[i]] = density(all_mergeLabelScore[[i]]$M_MSigDB_UCell)
+}
+
+```
+
+
+```{r, fig.height=3, fig.width=4.5}
+
+# Change graphical parameters; make right margin larger so that legend can extend
+par(mar=c(5, 4, 4, 10), xpd=TRUE)
+
+# Plot
+plot(NA, xlim=c(0,0.6), ylim=c(0,20),
+     main="Kernel Densities of Mesenchymal Score,\nMSigDB Markers", xlab="EMTscore")
+
+cols <- c(brewer.pal(n=8, name="Greens")[2:8])
+
+for (i in 1:length(all_kds)) {
+  lines(all_kds[[i]], col=cols[i], lwd=2)
+}
+
+legend("right", legend=allSamples,
+       pch=19, col=cols, cex=0.8,
+       inset=-0.2)
+
+```
+
